@@ -80,6 +80,27 @@ def detect_fraud(df):
         "fraud_reasons"
     ] += "Multiple transactions within 10 minutes;"
 
+    #Rule 5: Locatio anomaly detection
+
+    df["previous_location"] = (
+        df.groupby("account_id")["location"].shift(1)
+    )
+
+    location_anomaly = (
+        (df["time_difference_minutes"] >= 0)
+        & (df["time_difference_minutes"] <= 30)
+        & df["previous_location"].notna()
+        & df["location"].notna()
+        & (df["location"] != df["previous_location"])
+    )
+
+    df.loc[location_anomaly, "risk_score"] += 25
+
+    df.loc[
+        location_anomaly,
+        "fraud_reasons"
+    ] += "Location changed within 30 minutes;"
+
     #Risk level
     df["risk_level"] = "Low"
 
@@ -94,6 +115,51 @@ def detect_fraud(df):
     ] = "High"
 
     return df
+
+def save_fraud_alerts(df):
+    connection = get_connection()
+    cursor = connection.cursor()
+
+    try:
+        suspicious = df[df["risk_score"] > 0]
+
+        for _, row in suspicious.iterrows():
+            cursor.execute(
+                """
+                SELECT alert_id
+                from fraud_alerts
+                where transaction_id = %s
+                """,
+                (int(row["transaction_id"]),)
+            )
+
+            if cursor.fetchone():
+                continue
+
+            cursor.execute(
+                """
+                insert into fraud_alerts
+                (transaction_id, risk_score, risk_level, fraud_reason)
+                values (%s, %s, %s, %s)
+                """,
+                (
+                    int(row["transaction_id"]),
+                    float(row["risk_score"]),
+                    row["risk_level"],
+                    row["fraud_reasons"].strip()
+                )
+            )
+
+        connection.commit()
+        print("Fraud alerts saved successfully!")
+
+    except Exception:
+        connection.rollback()
+        raise
+
+    finally:
+        cursor.close()
+        connection.close()
 
 if __name__ == "__main__":
 
@@ -119,3 +185,5 @@ if __name__ == "__main__":
             ]
         ].to_string(index=False)
     )
+
+    save_fraud_alerts(result)
